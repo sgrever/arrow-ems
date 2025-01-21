@@ -1,0 +1,18 @@
+project:
+  type: website
+  output-dir: docs
+
+website:
+  title: "NYC EMS Arrow Analysis"
+  sidebar:
+    contents:
+      - href: index.qmd
+        text: Home
+      - href: demo.qmd
+        text: Demo
+        
+format:
+  html:
+    theme: cosmo
+    css: [cosmo, styles.scss]
+    toc: true
