@@ -49,7 +49,7 @@ toc() # 0.07 sec
 ```
 
 
-Ideally, I would create parquet files by year. However, these date columns aren't in good shape for quick grouping. The csv converted 'MM/DD/YYYY HH:MM:SS' to strings instead of date-objects for R.  
+Ideally, I would create parquet files by year. However, these date columns aren't in good shape for quick grouping. The csv stored 'MM/DD/YYYY HH:MM:SS' variables as strings rather than date-objects for R.  
 
 ```{r ems-full-glimpse}
 #| eval: false 
@@ -150,25 +150,139 @@ list.files("data/ems-nyc")
 
 tibble(
   files = list.files("data/ems-nyc", recursive = TRUE),
-  mb = scales::comma(
-    file.size(file.path("data/ems-nyc", files)) / 1024^2 
-    )
-) 
+  mb = file.size(file.path("data/ems-nyc", files)) / 1024^2 
+) |> 
+  janitor::adorn_totals() |> 
+  mutate(mb = scales::comma(mb))
 
-# files                                                size_MB
-# <chr>                                                <chr>  
-# 1 BOROUGH=BRONX/part-0.parquet                         480    
-# 2 BOROUGH=BROOKLYN/part-0.parquet                      573    
-# 3 BOROUGH=MANHATTAN/part-0.parquet                     506    
-# 4 BOROUGH=QUEENS/part-0.parquet                        416    
-# 5 BOROUGH=RICHMOND%20%2F%20STATEN%20ISLAND/part-0.par… 126    
-# 6 BOROUGH=UNKNOWN/part-0.parquet                       1  
+# files                                mb
+# BOROUGH=BRONX/part-0.parquet         480
+# BOROUGH=BROOKLYN/part-0.parquet      573
+# BOROUGH=MANHATTAN/part-0.parquet     506
+# BOROUGH=QUEENS/part-0.parquet        416
+# BOROUGH=RICHMOND.../part-0.parquet   126
+# BOROUGH=UNKNOWN/part-0.parquet       1
+# Total                                2,102
 ```
 
+These compressed files sum to **2.05GB** - a sharp decrease from the original **5.88GB**!
 
 ## Import Parquet  
 
+I can once again use `open_dataset()` to establish a connection to my data. In this case, these are now parquet files.  
+
+```{r}
+#| eval: false 
+
+ems_nyc_parquet <- open_dataset("data/ems-nyc")
+```
+
+Each EMS indicident is assigned a call type, which is the dispatcher's perceived severity of the incident based on caller details. Most of these require an *external source* to interpret.   
+
+```{r}
+#| eval: false 
+
+ems_nyc_parquet |> 
+  group_by(FINAL_CALL_TYPE) |> 
+  count(sort = T) |> 
+  collect()
+
+#    FINAL_CALL_TYPE       n
+#    <chr>             <int>
+#  1 SICK            4049378
+#  2 INJURY          3714001
+#  3 DIFFBR          1950231
+#  4 EDP             1681874
+#  5 DRUG            1663994
+#  6 UNC             1527166
+#  7 UNKNOW          1302306
+#  8 CARD            1203100
+#  9 ABDPN           1153570
+# 10 MVAINJ           869055
+```
+
+To do this, I will merge with an Excel data dictionary.  
+
 ### Joins 
+
+```{r}
+#| eval: false
+
+call_types_raw <- readxl::read_xlsx(
+  "data/EMS_incident_dispatch_data_description.xlsx",
+  sheet = 3
+)
+colnames(call_types_raw) <- paste(
+  "call", c("code", "description"),
+  sep = "_"
+)
+```
+
+
+I could convert this metadata to a parquet file. However, it'd be much easier on R's memory to `collect()` my summary EMS tables, *then* tack on the metadata. Additionally, parquet files allow a **limited** set of dplyr verbs to be applied. Collecting the summary tables circumvents this.       
+
+```{r}
+#| eval: false 
+
+### Quick but restricting approach
+
+# Convenient but requires more memory
+call_types_arrow <- arrow_table(call_types_raw)
+
+# Resulting file is compatible with limited set of dplyr verbs
+ems_nyc_join <- ems_nyc_parquet |>
+  left_join(call_types_arrow,
+            by = c("FINAL_CALL_TYPE" = "call_code")) 
+```
+
+
+```{r}
+#| eval: false
+
+### Longer but flexible approach
+
+# Collect summary tables
+borough_call_types <- ems_nyc_parquet |> 
+  group_by(BOROUGH, FINAL_CALL_TYPE) |> 
+  count() |> 
+  collect()
+
+# Then, append metadata as normal
+# Can apply more functions, such as slice()
+borough_call_types_top5 <- borough_call_types |> 
+  left_join(call_types_raw,
+            by = c("FINAL_CALL_TYPE" = "call_code")) |> 
+  arrange(BOROUGH, desc(n)) |> 
+  group_by(BOROUGH) |> 
+  slice(1:5) |>
+  mutate(delete = 1) |> 
+  mutate(rank = cumsum(delete),
+         call_description = 
+           stringr::str_to_title(call_description)) |> 
+  select(borough = BOROUGH, 
+         rank, 
+         call_code = FINAL_CALL_TYPE,
+         call_description, 
+         calls = n)
+```
+
+
+A quick glance of the summary table, to be used in Analysis: 
+
+```{r}
+#| eval: false 
+borough_call_types_top5 |> head()
+
+#   borough   rank call_code call_description      calls
+#   <chr>    <dbl> <chr>     <chr>                 <int>
+# 1 BRONX        1 SICK      Sick                1019300
+# 2 BRONX        2 INJURY    Non-Critical Injury  839998
+# 3 BRONX        3 DIFFBR    Difficult Breather   513740
+# 4 BRONX        4 EDP       Psychiatric Patient  391644
+# 5 BRONX        5 ABDPN     Abdominal Pain       327507
+# 6 BROOKLYN     1 SICK      Sick                1173287
+```
+
 
 
 ## Analysis  
