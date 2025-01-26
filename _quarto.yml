@@ -3,13 +3,11 @@ project:
   output-dir: docs
 
 website:
-  title: "NYC EMS Arrow Analysis"
+  title: "NYC Dispatch Arrow Analysis"
   sidebar:
     contents:
       - href: index.qmd
         text: Home
-      - href: demo.qmd
-        text: Demo
         
 format:
   html:
